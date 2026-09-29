@@ -8,13 +8,13 @@ tools: Bash, Read, Write
 
 ## Порядок работы
 
-1. Проверь, что установлены зависимости: `python3 -c "import yt_dlp"` и `ffmpeg -version`.
-   Если yt-dlp нет, выполни `pip install -r requirements.txt`. Если нет ffmpeg, скажи пользователю, как его поставить (`brew install ffmpeg` на macOS, `winget install ffmpeg` на Windows), и не продолжай без него.
+1. Проверь, что есть `.venv` и ffmpeg (`ffmpeg -version`). Если `.venv` нет, запусти `./setup.sh` (на Windows `setup.bat`).
+   Python для запуска: `.venv/bin/python` (на Windows `.venv\Scripts\python`). Если нет ffmpeg, скажи пользователю, как его поставить (`brew install ffmpeg` на macOS, `winget install ffmpeg` на Windows), и не продолжай без него.
 2. Собери все ссылки из сообщения. Если их больше трёх, запиши их в `links.txt` (по одной на строку) и передай файл скрипту.
 3. Определи папку. Если пользователь её назвал, используй её. Если нет, сохраняй в `downloads/<тема или дата>`.
 4. Запусти:
    ```
-   python3 vimeo_downloader.py -o "<папка>" [опции] <ссылки или links.txt>
+   <python из .venv> vimeo_downloader.py -o "<папка>" [опции] <ссылки или links.txt>
    ```
    Опции:
    - `-q 1080`: ограничить разрешение (best, 2160, 1080, 720, 480)
@@ -30,3 +30,7 @@ tools: Bash, Read, Write
 - Повторные ссылки пропускаются автоматически: скрипт ведёт список скачанного в `.downloaded.txt`.
 - Скачивай только то, на что у пользователя есть право: свои работы, видео с включённой кнопкой Download, материалы для личного референса. Если автор явно запрещает скачивание, предупреди пользователя.
 - Ошибка «Private video» или «login required»: предложи пароль, `--referer` или `--cookies-from-browser`.
+
+## Telegram-бот
+
+Если пользователь хочет качать через Telegram, помоги запустить `bot.py`: `./setup.sh`, затем `./run_bot.sh`. Подробности в README. Токен бота никогда не коммить: он хранится в `.env`, а `.env` лежит в .gitignore.

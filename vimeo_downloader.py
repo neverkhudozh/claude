@@ -14,6 +14,7 @@ Examples:
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -29,6 +30,19 @@ QUALITY_FORMATS = {
     "720": "bestvideo*[height<=720]+bestaudio/best[height<=720]",
     "480": "bestvideo*[height<=480]+bestaudio/best[height<=480]",
 }
+
+URL_RE = re.compile(r"https?://(?:[\w-]+\.)*vimeo\.com/[^\s<>\"']+", re.IGNORECASE)
+
+
+def find_vimeo_urls(text):
+    """Pull every Vimeo link out of free text (chat messages, notes, emails)."""
+    seen, urls = set(), []
+    for url in URL_RE.findall(text or ""):
+        url = url.rstrip(".,;:!?)]}»")
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
 
 
 def collect_urls(sources):
@@ -46,40 +60,104 @@ def collect_urls(sources):
     return urls
 
 
-def build_options(args, out_dir):
+class _ErrorCollector:
+    """yt-dlp logger that remembers errors so callers can report them."""
+
+    def __init__(self, echo):
+        self.echo = echo
+        self.errors = []
+
+    def debug(self, msg):
+        if self.echo and not msg.startswith("[debug] "):
+            print(msg)
+
+    def info(self, msg):
+        if self.echo:
+            print(msg)
+
+    def warning(self, msg):
+        if self.echo:
+            print(msg, file=sys.stderr)
+
+    def error(self, msg):
+        self.errors.append(re.sub(r"^ERROR:\s*", "", msg))
+        if self.echo:
+            print(msg, file=sys.stderr)
+
+
+def build_options(out_dir, quality="best", password=None, referer=None,
+                  cookies_from_browser=None, cookies=None, audio_only=False,
+                  thumbnail=False, subs=False, info=False, archive=True):
+    out_dir = Path(out_dir)
     opts = {
-        "format": QUALITY_FORMATS[args.quality],
+        "format": QUALITY_FORMATS[quality],
         "merge_output_format": "mp4",
-        "outtmpl": str(out_dir / "%(uploader,channel|Unknown)s - %(title)s [%(id)s].%(ext)s"),
-        "restrictfilenames": False,
+        "outtmpl": str(out_dir / "%(uploader,channel|Unknown)s - %(title).120B [%(id)s].%(ext)s"),
         "windowsfilenames": True,
-        "download_archive": str(out_dir / ".downloaded.txt"),
         "ignoreerrors": True,
         "retries": 10,
         "fragment_retries": 10,
         "concurrent_fragment_downloads": 4,
-        "writethumbnail": args.thumbnail,
-        "writesubtitles": args.subs,
+        "writethumbnail": thumbnail,
+        "writesubtitles": subs,
         "subtitleslangs": ["all"],
-        "writedescription": args.info,
-        "writeinfojson": args.info,
-        "quiet": False,
-        "no_warnings": False,
+        "writedescription": info,
+        "writeinfojson": info,
     }
-    if args.password:
-        opts["videopassword"] = args.password
-    if args.cookies_from_browser:
-        opts["cookiesfrombrowser"] = (args.cookies_from_browser,)
-    if args.cookies:
-        opts["cookiefile"] = str(Path(args.cookies).expanduser())
-    if args.referer:
+    if archive:
+        opts["download_archive"] = str(out_dir / ".downloaded.txt")
+    if password:
+        opts["videopassword"] = password
+    if cookies_from_browser:
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
+    if cookies:
+        opts["cookiefile"] = str(Path(cookies).expanduser())
+    if referer:
         # Needed for videos that are only allowed to play embedded on a specific site.
-        opts["http_headers"] = {"Referer": args.referer}
-    if args.audio_only:
+        opts["http_headers"] = {"Referer": referer}
+    if audio_only:
         opts["format"] = "bestaudio/best"
         opts.pop("merge_output_format")
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}]
     return opts
+
+
+def _final_paths(info):
+    """Walk an extract_info() result (video or playlist) and yield saved files."""
+    if not info:
+        return
+    if info.get("entries"):
+        for entry in info["entries"]:
+            yield from _final_paths(entry)
+        return
+    for item in info.get("requested_downloads") or []:
+        path = item.get("filepath") or item.get("_filename")
+        if path and Path(path).exists():
+            yield Path(path)
+
+
+def download(urls, out_dir, progress_hook=None, echo=True, **options):
+    """Download urls into out_dir. Returns (list of saved files, list of error messages)."""
+    out_dir = Path(out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    opts = build_options(out_dir, **options)
+    logger = _ErrorCollector(echo)
+    opts["logger"] = logger
+    if not echo:
+        opts["noprogress"] = True
+    if progress_hook:
+        opts["progress_hooks"] = [progress_hook]
+
+    files = []
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        for url in urls:
+            try:
+                info = ydl.extract_info(url, download=True)
+            except yt_dlp.utils.DownloadError as exc:
+                logger.error(str(exc))
+                continue
+            files.extend(p for p in _final_paths(info) if p not in files)
+    return files, logger.errors
 
 
 def main():
@@ -102,14 +180,22 @@ def main():
         sys.exit("No URLs found.")
 
     out_dir = Path(args.output).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving {len(urls)} link(s) to {out_dir}")
+    files, errors = download(
+        urls, out_dir,
+        quality=args.quality, password=args.password, referer=args.referer,
+        cookies_from_browser=args.cookies_from_browser, cookies=args.cookies,
+        audio_only=args.audio_only, thumbnail=args.thumbnail, subs=args.subs, info=args.info,
+    )
 
-    with yt_dlp.YoutubeDL(build_options(args, out_dir)) as ydl:
-        code = ydl.download(urls)
-
-    print("Done." if code == 0 else "Finished with errors - see messages above.")
-    sys.exit(code)
+    for f in files:
+        print(f"  saved: {f.name}")
+    if errors:
+        print(f"Finished with {len(errors)} error(s):")
+        for e in errors:
+            print(f"  - {e}")
+        sys.exit(1)
+    print("Done.")
 
 
 if __name__ == "__main__":
